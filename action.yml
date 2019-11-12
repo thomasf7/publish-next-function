@@ -1,0 +1,12 @@
+name: "Publish Next Function"
+description: "Publish Serverless NextJS using Azure Functions and Storage"
+inputs:
+  configuration:
+    description: "Configuration for resources, build and deployment."
+    required: true
+  app-settings:
+    description: "JSON object containing key: values of any app settings to configure on the function app."
+    required: false
+runs:
+  using: "node12"
+  main: "src/index.js"
