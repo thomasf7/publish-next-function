@@ -1,68 +1,109 @@
 const core = require("@actions/core");
+const github = require("@actions/github");
 const { promisify } = require("util");
 const { exec } = require("child_process");
-const nextBuild = require.main.require(
-  `${process.env.GITHUB_WORKSPACE}/node_modules/next/dist/build`
-).default;
 const fse = require("fs-extra");
 const { join } = require("path");
 const archiver = require("archiver");
 
-const { parseNextConfiguration } = require("./parseNextConfiguration");
+const execAsyncInternal = promisify(exec);
+
 const { NextBuild } = require("./next");
 const { proxiesJson, handler, functionJson, hostJson } = require("./templates");
-const execAsyncInternal = promisify(exec);
 
 async function run() {
   try {
-    const config = loadConfig();
+    const isPullRequest = getIsPullRequest();
+    let pullRequestId;
+    if (isPullRequest) {
+      pullRequestId = github.context.payload.pull_request.id;
+    }
+
+    const config = loadConfig(pullRequestId);
     const sourcePath = process.env.GITHUB_WORKSPACE;
     const buildOutputPath = join(sourcePath, config.buildOutputDir);
 
     await checkAzureCliIsAvailable();
-    await build(sourcePath);
-    await package(sourcePath, buildOutputPath, config);
-    await deploy(sourcePath, buildOutputPath, config);
-    await configureAppSettings(config);
-    
+    if (isPullRequest && github.context.payload.action === "closed") {
+      console.log("cleaning up closed pull request resources.");
+      await clean(config);
+    } else {
+      await build(sourcePath);
+      await package(sourcePath, buildOutputPath, config);
+      await deploy(sourcePath, buildOutputPath, config);
+      await configureAppSettings(config);
+    }
   } catch (error) {
     core.setFailed(error.message);
   }
 }
 
-function loadConfig() {
+function getIsPullRequest() {
+  const pullRequestJSON = core.getInput("pull-request");
+  if (pullRequestJSON) {
+    const isPullRequest = JSON.parse(pullRequestJSON);
+    if (isPullRequest && github.context.eventName !== "pull_request") {
+      throw new Error(
+        `Unable to run in pull request mode when event is not 'pull_request'. Actual event: ${eventName}`
+      );
+    }
+    return isPullRequest;
+  }
+  return false;
+}
+
+function loadConfig(pullRequestId) {
   const configJSON = core.getInput("configuration");
-  if(!configJSON) {
+  if (!configJSON) {
     throw new Error("Configuration is missing");
   }
   const config = JSON.parse(configJSON);
 
-  if(!config.subscriptionId) {
+  if (!config.subscriptionId) {
     throw new Error("Configuration value is missing: subscriptionId");
   }
 
-  if(!config.resourceGroup) {
+  if (!config.resourceGroup) {
     throw new Error("Configuration value is missing: resourceGroup");
   }
 
-  if(!config.location) {
+  if (!config.location) {
     throw new Error("Configuration value is missing: location");
   }
 
-  if(!config.name) {
+  if (!config.name) {
     throw new Error("Configuration value is missing: name");
   }
 
-  if(!config.storageAccount) {
+  if (!config.storageAccount) {
     throw new Error("Configuration value is missing: storageAccount");
   }
 
-  if(!config.buildOutputDir) {
+  if (!config.buildOutputDir) {
     config.buildOutputDir = "build";
   }
 
-  if(!config.assetsContainerName) {
+  if (!config.assetsContainerName) {
     config.assetsContainerName = "assets";
+  }
+
+  if (pullRequestId) {
+    // if this is running as a PR action, adjust the config to deploy a unique instance for this PR
+
+    // build a name from the provided name plus pull request id and make sure it doesn't exceed the 60 character limit
+    const pullRequestSuffix = `-${pullRequestId}`;
+    const nameLength = 60 - pullRequestSuffix.length;
+    // trim the provided name so the pull request id will fit and remove any non-alphanumeric characters from the end
+    const trimmedName = config.name
+      .substring(0, nameLength)
+      .replace(new RegExp("[^a-zA-Z0-9]+$"), "");
+    config.name = `${trimmedName}-${pullRequestId}`;
+
+    // use a shared pr storage account with pr prefix - make sure it doesn't exceed the 24 character name limit
+    config.storageAccount = `pr${config.storageAccount}`.substring(0, 24);
+
+    // use a unique container for assets for each PR inside the shared storage account
+    config.assetsContainerName = `${config.assetsContainerName}-${pullRequestId}`;
   }
 
   return config;
@@ -79,6 +120,17 @@ async function checkAzureCliIsAvailable() {
 
 async function build(sourcePath) {
   console.log("Building next application");
+  let nextBuild;
+  try {
+    nextBuild = require.main.require(
+      `${process.env.GITHUB_WORKSPACE}/node_modules/next/dist/build`
+    ).default;
+  } catch (e) {
+    throw new Error(
+      "Unable to load next module. Make sure next is in your package.json and you have run 'npm install'."
+    );
+  }
+  const { parseNextConfiguration } = require("./parseNextConfiguration");
   const nextConfig = parseNextConfiguration(sourcePath);
   await nextBuild(sourcePath, nextConfig);
 }
@@ -198,7 +250,7 @@ async function deploy(sourcePath, buildOutputPath, config) {
   console.log("Deploying next application");
 
   try {
-    console.log("Creating resource group...");
+    console.log(`Creating resource group '${resourceGroup}'...`);
     await execAsyncInternal(
       `az group create --subscription ${subscriptionId} --name ${resourceGroup} --location ${location}`
     );
@@ -208,7 +260,7 @@ async function deploy(sourcePath, buildOutputPath, config) {
   }
 
   try {
-    console.log("Creating storage account...");
+    console.log(`Creating storage account '${storageAccount}'...`);
     await execAsyncInternal(
       `az storage account create --subscription ${subscriptionId} --name ${storageAccount} --location ${location} --resource-group ${resourceGroup} --sku Standard_LRS`
     );
@@ -218,7 +270,7 @@ async function deploy(sourcePath, buildOutputPath, config) {
   }
 
   try {
-    console.log(`Creating storage container...`);
+    console.log(`Creating storage container '${assetsContainerName}'...`);
     await execAsyncInternal(
       `az storage container create --subscription ${subscriptionId} --name ${assetsContainerName} --account-name ${storageAccount}`
     );
@@ -238,7 +290,7 @@ async function deploy(sourcePath, buildOutputPath, config) {
   }
 
   try {
-    console.log("Creating function app...");
+    console.log(`Creating function app '${name}'...`);
     await execAsyncInternal(
       `az functionapp create --subscription ${subscriptionId} --resource-group ${resourceGroup} --consumption-plan-location ${location} \
 --name ${name} --storage-account ${storageAccount} --runtime node`
@@ -276,7 +328,7 @@ async function deploy(sourcePath, buildOutputPath, config) {
         console.log(
           `Could not deploy package to Azure function app, waiting 5s and then retrying... ${e.message}`
         );
-        await sleep(5000);
+        await new Promise(resolve => setTimeout(resolve, 5000));
       } else {
         throw new Error("Could not deploy package to Azure function app", e);
       }
@@ -313,12 +365,43 @@ async function deploy(sourcePath, buildOutputPath, config) {
 }
 
 async function configureAppSettings(config) {
-    const appSecretsJSON = core.getInput("app-settings");
-    if (appSecretsJSON) {
-      const appSettings = JSON.parse(appSecretsJSON);
-      const formattedAppSettings = Object.keys(appSettings).reduce((settings, key) => `${settings}${key}=${appSettings[key]} `, "");
-      await execAsyncInternal(`az functionapp config appsettings set --settings ${formattedAppSettings} --resource-group ${config.resourceGroup} --name ${config.name}`);
-    }
+  const appSecretsJSON = core.getInput("app-settings");
+  if (appSecretsJSON) {
+    const appSettings = JSON.parse(appSecretsJSON);
+    const formattedAppSettings = Object.keys(appSettings).reduce(
+      (settings, key) => `${settings}${key}=${appSettings[key]} `,
+      ""
+    );
+    await execAsyncInternal(
+      `az functionapp config appsettings set --settings ${formattedAppSettings} --resource-group ${config.resourceGroup} --name ${config.name}`
+    );
+  }
+}
+
+async function clean(config) {
+  const {
+    name,
+    subscriptionId,
+    resourceGroup,
+    assetsContainerName,
+    storageAccount
+  } = config;
+  
+  console.log(`Deleting function app '${name}'...`);
+  await execAsyncInternal(
+    `az functionapp delete --subscription ${subscriptionId} --resource-group ${resourceGroup} --name ${name}`
+  );
+
+  console.log(`Deleting storage container '${assetsContainerName}'...`);
+  await execAsyncInternal(
+    `az storage container delete --subscription ${subscriptionId} --name ${assetsContainerName} --account-name ${storageAccount}`
+  );
+  await execAsyncInternal(`az extension add -n application-insights`);
+  
+  console.log(`Deleting app-insights '${name}'...`);
+  await execAsyncInternal(
+    `az monitor app-insights component delete --subscription ${subscriptionId} --resource-group ${resourceGroup} --app ${name}`
+  );
 }
 
 run();

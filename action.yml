@@ -7,6 +7,10 @@ inputs:
   app-settings:
     description: "JSON object containing key: values of any app settings to configure on the function app."
     required: false
+  pull-request:
+    description: "If true, this will deploy a unique instance based on the pull request information."
+    required: false
+    default: false
 runs:
   using: "node12"
   main: "src/index.js"
