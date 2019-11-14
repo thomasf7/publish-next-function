@@ -280,7 +280,7 @@ async function deploy(config) {
   try {
     console.log(`Creating storage account '${storageAccount}'...`);
     await execAsyncInternal(
-      `az storage account create --subscription ${subscriptionId} --name ${storageAccount} --location ${location} --resource-group ${resourceGroup} --sku Standard_LRS`
+      `az storage account create --subscription ${subscriptionId} --name ${storageAccount} --location ${location} --resource-group ${resourceGroup} --kind StorageV2 --sku Standard_LRS`
     );
   } catch (error) {
     console.log("Unable to create storage account");
