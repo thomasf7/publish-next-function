@@ -20,6 +20,16 @@ JSON object containing deployment configuration e.g:
 }
 ```
 
+Expected values:
+
+- subscriptionId: Id of the subscription to deploy to. Azure Login must have been run in the workflow prior to this action with appropriate permissions to access this subscription.
+- resourceGroup: Name of the resource group to deploy into. Azure Login must have been run in the workflow prior to this action with appropriate permissions to access this resource group if it exists or with permissions to create this resource group if it does not exist.
+- location: Azure location to create resources in.
+- name: Name of the function app. This will be created in the resource group if it does not exist.
+- storageAccount: Name of the storage account to use. This will be created in the resource group if it does not exist.
+- plan: (Optional) Name of the function app or app service plan to deploy the function app into. You need to create this resource yourself. If omitted, a consumption plan in the location specified will be used.
+- assetsContainerName: (Optional) Name of the container to deploy static assets into in the storage account. Default: "assets".
+
 ### `app-settings`
 
 (Optional) JSON object containing any application settings you want to access from within your app e.g:

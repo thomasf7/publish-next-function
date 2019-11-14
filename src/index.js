@@ -13,24 +13,16 @@ const { proxiesJson, handler, functionJson, hostJson } = require("./templates");
 
 async function run() {
   try {
-    const isPullRequest = getIsPullRequest();
-    let pullRequestId;
-    if (isPullRequest) {
-      pullRequestId = github.context.payload.pull_request.id;
-    }
-
-    const config = loadConfig(pullRequestId);
-    const sourcePath = process.env.GITHUB_WORKSPACE;
-    const buildOutputPath = join(sourcePath, config.buildOutputDir);
+    const config = loadConfig();
 
     await checkAzureCliIsAvailable();
-    if (isPullRequest && github.context.payload.action === "closed") {
+    if (config.isPullRequest && config.action === "closed") {
       console.log("cleaning up closed pull request resources.");
       await clean(config);
     } else {
-      await build(sourcePath);
-      await package(sourcePath, buildOutputPath, config);
-      await deploy(sourcePath, buildOutputPath, config);
+      await build(config);
+      await package(config);
+      await deploy(config);
       await configureAppSettings(config);
     }
   } catch (error) {
@@ -38,26 +30,35 @@ async function run() {
   }
 }
 
-function getIsPullRequest() {
-  const pullRequestJSON = core.getInput("pull-request");
-  if (pullRequestJSON) {
-    const isPullRequest = JSON.parse(pullRequestJSON);
-    if (isPullRequest && github.context.eventName !== "pull_request") {
-      throw new Error(
-        `Unable to run in pull request mode when event is not 'pull_request'. Actual event: ${eventName}`
-      );
-    }
-    return isPullRequest;
-  }
-  return false;
-}
-
-function loadConfig(pullRequestId) {
+function loadConfig() {
   const configJSON = core.getInput("configuration");
+  const pullRequestJSON = core.getInput("pull-request");
+  const appSecretsJSON = core.getInput("app-settings");
+
   if (!configJSON) {
     throw new Error("Configuration is missing");
   }
+
   const config = JSON.parse(configJSON);
+  config.action = github.context.payload.action;
+  config.sourcePath = process.env.GITHUB_WORKSPACE;
+  config.isPullRequest = false;
+  config.pullRequestId = undefined;
+  config.eventName = github.context.eventName;
+  config.appSecretsJSON = appSecretsJSON;
+
+  if (pullRequestJSON) {
+    config.isPullRequest = JSON.parse(pullRequestJSON);
+    if (config.isPullRequest) {
+      if (config.eventName !== "pull_request") {
+        throw new Error(
+          `Unable to run in pull request mode when event is not 'pull_request'. Actual event: ${eventName}`
+        );
+      } else {
+        config.pullRequestId = github.context.payload.pull_request.id;
+      }
+    }
+  }
 
   if (!config.subscriptionId) {
     throw new Error("Configuration value is missing: subscriptionId");
@@ -87,23 +88,27 @@ function loadConfig(pullRequestId) {
     config.assetsContainerName = "assets";
   }
 
-  if (pullRequestId) {
+  config.buildOutputPath = join(config.sourcePath, config.buildOutputDir);
+  config.buildPagesOutputPath = join(config.buildOutputPath, "pages");
+  config.buildAssetOutputPath = join(config.buildOutputPath, "assets");
+
+  if (config.isPullRequest && config.pullRequestId) {
     // if this is running as a PR action, adjust the config to deploy a unique instance for this PR
 
     // build a name from the provided name plus pull request id and make sure it doesn't exceed the 60 character limit
-    const pullRequestSuffix = `-${pullRequestId}`;
+    const pullRequestSuffix = `-${config.pullRequestId}`;
     const nameLength = 60 - pullRequestSuffix.length;
     // trim the provided name so the pull request id will fit and remove any non-alphanumeric characters from the end
     const trimmedName = config.name
       .substring(0, nameLength)
       .replace(new RegExp("[^a-zA-Z0-9]+$"), "");
-    config.name = `${trimmedName}-${pullRequestId}`;
+    config.name = `${trimmedName}-${config.pullRequestId}`;
 
     // use a shared pr storage account with pr prefix - make sure it doesn't exceed the 24 character name limit
     config.storageAccount = `pr${config.storageAccount}`.substring(0, 24);
 
     // use a unique container for assets for each PR inside the shared storage account
-    config.assetsContainerName = `${config.assetsContainerName}-${pullRequestId}`;
+    config.assetsContainerName = `${config.assetsContainerName}-${config.pullRequestId}`;
   }
 
   return config;
@@ -118,12 +123,14 @@ async function checkAzureCliIsAvailable() {
   }
 }
 
-async function build(sourcePath) {
+async function build(config) {
+  const { sourcePath } = config;
+
   console.log("Building next application");
   let nextBuild;
   try {
     nextBuild = require.main.require(
-      `${process.env.GITHUB_WORKSPACE}/node_modules/next/dist/build`
+      `${sourcePath}/node_modules/next/dist/build`
     ).default;
   } catch (e) {
     throw new Error(
@@ -135,10 +142,17 @@ async function build(sourcePath) {
   await nextBuild(sourcePath, nextConfig);
 }
 
-async function package(sourcePath, buildOutputPath, config) {
+async function package(config) {
+  const {
+    sourcePath,
+    buildOutputPath,
+    storageAccount,
+    assetsContainerName,
+    buildPagesOutputPath,
+    buildAssetOutputPath
+  } = config;
+
   console.log("Packaging next application");
-  const buildPagesOutputPath = join(buildOutputPath, "pages");
-  const buildAssetOutputPath = join(buildOutputPath, "assets");
 
   console.log("Scanning next build output");
   const buildOutput = new NextBuild(sourcePath);
@@ -175,7 +189,7 @@ async function package(sourcePath, buildOutputPath, config) {
   await fse.writeFile(
     join(buildPagesOutputPath, "proxies.json"),
     proxiesJson(
-      `https://${config.storageAccount}.blob.core.windows.net/${config.assetsContainerName}/`,
+      `https://${storageAccount}.blob.core.windows.net/${assetsContainerName}/`,
       buildOutput.pages
     ),
     {
@@ -237,14 +251,18 @@ async function package(sourcePath, buildOutputPath, config) {
   await fse.remove(buildPagesOutputPath);
 }
 
-async function deploy(sourcePath, buildOutputPath, config) {
+async function deploy(config) {
   const {
+    sourcePath,
+    buildOutputPath,
     subscriptionId,
     location,
     resourceGroup,
     storageAccount,
     assetsContainerName,
-    name
+    name,
+    buildAssetOutputPath,
+    plan
   } = config;
 
   console.log("Deploying next application");
@@ -290,11 +308,19 @@ async function deploy(sourcePath, buildOutputPath, config) {
   }
 
   try {
-    console.log(`Creating function app '${name}'...`);
-    await execAsyncInternal(
-      `az functionapp create --subscription ${subscriptionId} --resource-group ${resourceGroup} --consumption-plan-location ${location} \
---name ${name} --storage-account ${storageAccount} --runtime node`
-    );
+    if (plan) {
+      console.log(`Creating function app '${name}' using '${plan}' plan...`);
+      await execAsyncInternal(
+        `az functionapp create --subscription ${subscriptionId} --resource-group ${resourceGroup} --plan ${plan} \
+  --name ${name} --storage-account ${storageAccount} --runtime node`
+      );
+    } else {
+      console.log(`Creating function app '${name}' using consumption plan...`);
+      await execAsyncInternal(
+        `az functionapp create --subscription ${subscriptionId} --resource-group ${resourceGroup} --consumption-plan-location ${location} \
+  --name ${name} --storage-account ${storageAccount} --runtime node`
+      );
+    }
   } catch (error) {
     console.log("Unable to create function app");
     throw error;
@@ -338,10 +364,7 @@ async function deploy(sourcePath, buildOutputPath, config) {
   console.log(`Uploading assets to blob storage...`);
   try {
     await execAsyncInternal(
-      `az storage blob upload-batch --subscription ${subscriptionId} --account-name ${storageAccount} --destination ${assetsContainerName} --destination-path _next --source ${join(
-        buildOutputPath,
-        "assets"
-      )}`
+      `az storage blob upload-batch --subscription ${subscriptionId} --account-name ${storageAccount} --destination ${assetsContainerName} --destination-path _next --source ${buildAssetOutputPath}`
     );
   } catch (e) {
     throw new Error("Could not upload assets to Azure blob storage", e);
@@ -359,13 +382,11 @@ async function deploy(sourcePath, buildOutputPath, config) {
     throw new Error("Could not upload public assets to Azure blob storage", e);
   }
 
-  console.log(
-    `Successfully deployed to https://${config.name}.azurewebsites.net/`
-  );
+  console.log(`Successfully deployed to https://${name}.azurewebsites.net/`);
 }
 
 async function configureAppSettings(config) {
-  const appSecretsJSON = core.getInput("app-settings");
+  const { appSecretsJSON, resourceGroup, name } = config;
   if (appSecretsJSON) {
     const appSettings = JSON.parse(appSecretsJSON);
     const formattedAppSettings = Object.keys(appSettings).reduce(
@@ -373,7 +394,7 @@ async function configureAppSettings(config) {
       ""
     );
     await execAsyncInternal(
-      `az functionapp config appsettings set --settings ${formattedAppSettings} --resource-group ${config.resourceGroup} --name ${config.name}`
+      `az functionapp config appsettings set --settings ${formattedAppSettings} --resource-group ${resourceGroup} --name ${name}`
     );
   }
 }
@@ -386,7 +407,7 @@ async function clean(config) {
     assetsContainerName,
     storageAccount
   } = config;
-  
+
   console.log(`Deleting function app '${name}'...`);
   await execAsyncInternal(
     `az functionapp delete --subscription ${subscriptionId} --resource-group ${resourceGroup} --name ${name}`
@@ -397,7 +418,7 @@ async function clean(config) {
     `az storage container delete --subscription ${subscriptionId} --name ${assetsContainerName} --account-name ${storageAccount}`
   );
   await execAsyncInternal(`az extension add -n application-insights`);
-  
+
   console.log(`Deleting app-insights '${name}'...`);
   await execAsyncInternal(
     `az monitor app-insights component delete --subscription ${subscriptionId} --resource-group ${resourceGroup} --app ${name}`
