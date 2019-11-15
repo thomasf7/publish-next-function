@@ -109,7 +109,6 @@ function loadConfig() {
 
     // use a unique container for assets for each PR inside the shared storage account
     config.assetsContainerName = `${config.assetsContainerName}-${config.pullRequestId}`;
-    config.isPullRequest = true;
   }
 
   return config;
@@ -392,7 +391,7 @@ async function deploy(config) {
       const client = new github.GitHub(token);
       const pullRequestNumber = github.context.payload.number;
       const pullRequest = github.context.payload.pull_request;          
-      const commentBody = `Successfully deployed test environment to https://${config.name}.azurewebsites.net/`
+      const commentBody = `Successfully deployed test environment to https://${name}.azurewebsites.net/`
 
       const response = await client.issues.createComment({
         owner: pullRequest.base.repo.owner.login,

@@ -59,6 +59,14 @@ If true and the pull request action is `closed`, the function app and storage co
 
 If true, the event type *must* be `pull_request`. Any other value will cause the action to fail.
 
+If true, the `github_token` input must be set with the `GITHUB_TOKEN` to get the test deployment environment details in a PR comment.
+
+### `github_token`
+
+(Optional) Github token value that will allow the action to comment the PR test environment details as a comment in the PR.
+
+If set, this token value will be used to call the Git client to create a comment in the PR after the deployment with the latest PR changes is complete. This has to be set with `${{ secrets.GITHUB_TOKEN }}`
+
 ## Example usage
 
 ### CI Workflow usage
@@ -117,6 +125,7 @@ jobs:
           with:
             configuration: ${{ secrets.CONFIGURATION }}
             app-settings: ${{ secrets.APPSETTINGS }}
+            github_token: ${{ secrets.GITHUB_TOKEN }}
             pull-request: true
 
   cleanup:
