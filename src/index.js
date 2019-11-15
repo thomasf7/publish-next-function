@@ -262,7 +262,8 @@ async function deploy(config) {
     assetsContainerName,
     name,
     buildAssetOutputPath,
-    plan
+    plan,
+    isPullRequest
   } = config;
 
   console.log("Deploying next application");
@@ -383,6 +384,26 @@ async function deploy(config) {
   }
 
   console.log(`Successfully deployed to https://${name}.azurewebsites.net/`);
+
+  if (isPullRequest) {
+    try {
+      const token = core.getInput('github_token', { required: true });
+      const client = new github.GitHub(token);
+      const pullRequestNumber = github.context.payload.number;
+      const pullRequest = github.context.payload.pull_request;          
+      const commentBody = `Successfully deployed test environment to https://${name}.azurewebsites.net/`
+
+      const response = await client.issues.createComment({
+        owner: pullRequest.base.repo.owner.login,
+        repo: pullRequest.base.repo.name,
+        issue_number: pullRequestNumber,
+        body: commentBody
+      });
+    } catch (e) {
+      // not failing the action for this.
+      console.log("Failed to post comment on deployment to PR.");
+    }
+  }
 }
 
 async function configureAppSettings(config) {
