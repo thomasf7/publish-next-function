@@ -80,21 +80,21 @@ on:
     branches: master
 jobs:
   build:
-  runs-on: ubuntu-latest
-  steps:
-  - name: Checkout
-    uses: actions/checkout@v1
-  - name: Azure Login
-    uses: Azure/login@v1
-    with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-  - name: npm install
-    run: npm ci
-  - name: Publish next function
-    uses: thomasf7/publish-next-function@master
-    with:
-          configuration: ${{ secrets.CONFIGURATION }}
-          app-settings: ${{ secrets.APPSETTINGS }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v1
+    - name: Azure Login
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: npm install
+      run: npm ci
+    - name: Publish next function
+      uses: thomasf7/publish-next-function@master
+      with:
+        configuration: ${{ secrets.CONFIGURATION }}
+        app-settings: ${{ secrets.APPSETTINGS }}
 ```
 
 ### Pull Request Workflow usage
@@ -108,37 +108,24 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 jobs:
-  build:
-    if: github.event.action != 'closed'
+  pull_request:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-          uses: actions/checkout@v1
-    - name: Azure Login
-          uses: Azure/login@v1
-          with:
-            creds: ${{ secrets.AZURE_CREDENTIALS }}
+      if: github.event.action != 'closed'
+      uses: actions/checkout@v1
     - name: npm install
-          run: npm ci
-    - name: Publish next function
-          uses: thomasf7/publish-next-function@master
-          with:
-            configuration: ${{ secrets.CONFIGURATION }}
-            app-settings: ${{ secrets.APPSETTINGS }}
-            github_token: ${{ secrets.GITHUB_TOKEN }}
-            pull-request: true
-
-  cleanup:
-    if: github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    steps:
+      if: github.event.action != 'closed'
+      run: npm ci
     - name: Azure Login
-          uses: Azure/login@v1
-          with:
-            creds: ${{ secrets.AZURE_CREDENTIALS }}
-    - name: Clean up next function
-          uses: thomasf7/publish-next-function@master
-          with:
-            configuration: ${{ secrets.CONFIGURATION }}
-            pull-request: true
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: Publish next function
+      uses: thomasf7/publish-next-function@master
+      with:
+        configuration: ${{ secrets.CONFIGURATION }}
+        app-settings: ${{ secrets.APPSETTINGS }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        pull-request: true
 ```
