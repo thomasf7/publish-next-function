@@ -11,6 +11,9 @@ inputs:
     description: "If true, this will deploy a unique instance based on the pull request information."
     required: false
     default: false
+  github-token:
+    description: "Github token to access github resources required during the workflow. For example posting a comment in the PR. Required if 'pull-request' is true."
+    required: false
 runs:
   using: "node12"
   main: "src/index.js"
